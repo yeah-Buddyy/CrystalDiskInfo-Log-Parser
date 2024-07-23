@@ -5,13 +5,43 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 }
 
 # Define the file path
-$filePathDiskInfoIni = "$PSScriptRoot\CrystalDiskInfo9_3_2\DiskInfo.ini"
+$filePathDiskInfoIni = "$PSScriptRoot\CrystalDiskInfo\DiskInfo.ini"
 
 # Define the file path
-$filePathDiskInfoTxt = "$PSScriptRoot\CrystalDiskInfo9_3_2\DiskInfo.txt"
+$filePathDiskInfoTxt = "$PSScriptRoot\CrystalDiskInfo\DiskInfo.txt"
 
 # Define the file path
-$filePathDiskInfoExe = "$PSScriptRoot\CrystalDiskInfo9_3_2\DiskInfo64.exe"
+$filePathDiskInfoExe = "$PSScriptRoot\CrystalDiskInfo\DiskInfo64.exe"
+
+$DownloadURL = "https://sourceforge.net/projects/crystaldiskinfo/files/9.3.2/CrystalDiskInfo9_3_2.zip/download"
+$DownloadLocation = Join-Path -Path $PSScriptRoot -ChildPath "CrystalDiskInfo"
+$ZipFilePath = Join-Path -Path $DownloadLocation -ChildPath "CrystalDiskInfo.zip"
+
+# Download CrystalDiskInfo
+if (-not (Test-Path -Path "$DownloadLocation\DiskInfo64.exe" -PathType Leaf)) {
+    # Check if the download location directory exists
+    if (-not (Test-Path -Path $DownloadLocation)) {
+        # Create the directory
+        New-Item -Path $DownloadLocation -ItemType Directory -Force | Out-Null
+    }
+
+    # Download the zip file
+    Invoke-WebRequest -UserAgent "Wget" -Uri $DownloadURL -OutFile $ZipFilePath
+
+
+    # Check if the zip file was downloaded successfully
+    if (Test-Path -Path $ZipFilePath) {
+        # Extract the zip file
+        Expand-Archive -Path $ZipFilePath -DestinationPath $DownloadLocation -Force
+
+        # Remove the zip file after extraction
+        Remove-Item -Path $ZipFilePath -Force
+    } else {
+        Write-Error "Failed to download the file from $DownloadURL"
+    }
+} else {
+    Write-Host "CrystalDiskInfo already downloaded"
+}
 
 # Define the content to be written to the file
 $DiskInfoIniContent = @"
