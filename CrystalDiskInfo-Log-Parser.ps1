@@ -4,6 +4,12 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
     exit;
 }
 
+$MaxReadErrorRate = 100
+$MaxWriteErrorRate = 100
+$MaxReallocatedSectorsCount = 1
+$MaxCurrentPendingSectorCount = 1
+$MaxUncorrectableSectorCount = 1
+
 # Define the file path
 $filePathDiskInfoIni = "$PSScriptRoot\CrystalDiskInfo\DiskInfo.ini"
 
@@ -18,7 +24,7 @@ $DownloadLocation = Join-Path -Path $PSScriptRoot -ChildPath "CrystalDiskInfo"
 $ZipFilePath = Join-Path -Path $DownloadLocation -ChildPath "CrystalDiskInfo.zip"
 
 # Download CrystalDiskInfo
-if (-not (Test-Path -Path "$DownloadLocation\DiskInfo64.exe" -PathType Leaf)) {
+if (-not (Test-Path -Path $filePathDiskInfoExe -PathType Leaf)) {
     # Check if the download location directory exists
     if (-not (Test-Path -Path $DownloadLocation)) {
         # Create the directory
@@ -27,7 +33,6 @@ if (-not (Test-Path -Path "$DownloadLocation\DiskInfo64.exe" -PathType Leaf)) {
 
     # Download the zip file
     Invoke-WebRequest -UserAgent "Wget" -Uri $DownloadURL -OutFile $ZipFilePath
-
 
     # Check if the zip file was downloaded successfully
     if (Test-Path -Path $ZipFilePath) {
@@ -40,7 +45,7 @@ if (-not (Test-Path -Path "$DownloadLocation\DiskInfo64.exe" -PathType Leaf)) {
         Write-Error "Failed to download the file from $DownloadURL"
     }
 } else {
-    Write-Host "CrystalDiskInfo already downloaded"
+    Write-Host "CrystalDiskInfo already downloaded" -ForegroundColor Cyan
 }
 
 # Define the content to be written to the file
@@ -83,7 +88,7 @@ NVMeRealtek="1"
 Set-Content -Path $filePathDiskInfoIni -Value $DiskInfoIniContent
 
 # Output a message indicating the operation is complete
-Write-Host "DiskInfo.ini has been created/overwritten with the specified content." -ForegroundColor Yellow
+Write-Host "DiskInfo.ini has been created/overwritten with the specified content." -ForegroundColor Cyan
 
 # We start CrystalDiskInfo with the COPYEXIT parameter. This just collects the SMART information in DiskInfo.txt
 Start-Process "$filePathDiskInfoExe" -ArgumentList "/CopyExit" -Wait -WindowStyle Hidden
@@ -159,6 +164,68 @@ if ($currentModelCapture.Count -gt 0) {
     $allModelCapturedLines += ,@($currentModelCapture)
 }
 
+# Function to get the latest and second latest registry entry
+function Get-LatestAndSecondLatestRegistryValues {
+    param (
+        [parameter(Mandatory = $true)][string]$RegistryPath
+    )
+    
+    # Check if registry path exists
+    if (-not (Test-Path -Path $RegistryPath)) {
+        Write-Host "Registry path does not exist: $RegistryPath" -ForegroundColor Cyan
+        return $null
+    }
+    
+    # Get all property names (dates) in the registry path
+    $propertyNames = Get-ItemProperty -Path $RegistryPath | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
+    
+    # Filter dates and convert to datetime objects
+    $dates = @()
+    foreach ($prop in $propertyNames) {
+        if ($prop -match "^\d{4}-\d{2}-\d{2}$") { # Check if property name is a date in 'yyyy-MM-dd' format
+            $propDate = [datetime]::ParseExact($prop, 'yyyy-MM-dd', $null)
+            $dates += $propDate
+        }
+    }
+    
+    # Get the latest and second latest dates from the filtered dates
+    if ($dates.Count -gt 1) {
+        $sortedDates = $dates | Sort-Object -Descending
+        $latestDate = $sortedDates[0]
+        $secondLatestDate = $sortedDates[1]
+        
+        $latestDateString = $latestDate.ToString('yyyy-MM-dd')
+        $secondLatestDateString = $secondLatestDate.ToString('yyyy-MM-dd')
+        
+        # Get the registry values for the latest and second latest dates
+        $latestValue = (Get-ItemProperty -Path $RegistryPath -Name $latestDateString).$latestDateString
+        $secondLatestValue = (Get-ItemProperty -Path $RegistryPath -Name $secondLatestDateString).$secondLatestDateString
+        
+        return @{
+            LatestDate = $latestDateString
+            LatestValue = $latestValue
+            SecondLatestDate = $secondLatestDateString
+            SecondLatestValue = $secondLatestValue
+        }
+    } elseif ($dates.Count -eq 1) {
+        $latestDate = $dates[0]
+        $latestDateString = $latestDate.ToString('yyyy-MM-dd')
+        
+        # Get the registry value for the latest date
+        $latestValue = (Get-ItemProperty -Path $RegistryPath -Name $latestDateString).$latestDateString
+        
+        return @{
+            LatestDate = $latestDateString
+            LatestValue = $latestValue
+            SecondLatestDate = $null
+            SecondLatestValue = $null
+        }
+    } else {
+        Write-Host "No valid dates found in the registry path $RegistryPath." -ForegroundColor Cyan
+        return $null
+    }
+}
+
 for ($i = 0; $i -lt $allRawValuesCapturedLines.Count; $i++) {
     # Process RawValues
     $DiskInfoRaw = $allRawValuesCapturedLines[$i]
@@ -188,7 +255,7 @@ for ($i = 0; $i -lt $allRawValuesCapturedLines.Count; $i++) {
 
     # Check if the first line contains "Cur", "Wor", and "Thr"
     if ($firstLine -match "Cur" -and $firstLine -match "Wor" -and $firstLine -match "Thr") {
-        Write-Host "FOUND HDD OR SSD LOG" -ForegroundColor Yellow
+        Write-Host "FOUND HDD OR SSD LOG" -ForegroundColor Cyan
         $diskinfo = $DiskInfoRaw -split "`n" | select -skip 1 | Out-String | ConvertFrom-Csv -Delimiter " " -Header "ID","Cur","Wor","Thr","RawValue","Attribute","Name"
 
         [int64]$ReadErrorRate = "0x" + ($diskinfo | Where-Object { $_.ID -eq "01"}).RawValue
@@ -210,90 +277,224 @@ for ($i = 0; $i -lt $allRawValuesCapturedLines.Count; $i++) {
         [int64]$WriteErrorRate = "0x" + ($diskinfo | Where-Object { $_.ID -eq "C8"}).RawValue
 
         Write-Host "Disk Information" -BackgroundColor Magenta
-        Write-Host "Model: $($modelObject.Model)" -BackgroundColor Green
-        Write-Host "Firmware: $($modelObject.Firmware)" -BackgroundColor Green
-        Write-Host "Serial Number: $($modelObject.SerialNumber)" -BackgroundColor Green
-        Write-Host "Disk Size: $($modelObject.DiskSize)" -BackgroundColor Green
-        Write-Host "Buffer Size: $($modelObject.BufferSize)" -BackgroundColor Green
-        Write-Host "Queue Depth: $($modelObject.QueueDepth)" -BackgroundColor Green
-        Write-Host "# of Sectors: $($modelObject.'#ofSectors')" -BackgroundColor Green
-        Write-Host "Rotation Rate: $($modelObject.RotationRate)" -BackgroundColor Green
-        Write-Host "Interface: $($modelObject.Interface)" -BackgroundColor Green
-        Write-Host "Major Version: $($modelObject.MajorVersion)" -BackgroundColor Green
-        Write-Host "Minor Version: $($modelObject.MinorVersion)" -BackgroundColor Green
-        Write-Host "Transfer Mode: $($modelObject.TransferMode)" -BackgroundColor Green
-        Write-Host "PowerOnHours: $($modelObject.PowerOnHours)" -BackgroundColor Green
-        Write-Host "PowerOnCount: $($modelObject.PowerOnCount)" -BackgroundColor Green
-        Write-Host "Temperature: $($modelObject.Temperature)" -BackgroundColor Green
+        Write-Host "Model: $($modelObject.Model)"
+        Write-Host "Firmware: $($modelObject.Firmware)"
+        Write-Host "Serial Number: $($modelObject.SerialNumber)"
+        Write-Host "Disk Size: $($modelObject.DiskSize)"
+        Write-Host "Buffer Size: $($modelObject.BufferSize)"
+        Write-Host "Queue Depth: $($modelObject.QueueDepth)"
+        Write-Host "# of Sectors: $($modelObject.'#ofSectors')"
+        Write-Host "Rotation Rate: $($modelObject.RotationRate)"
+        Write-Host "Interface: $($modelObject.Interface)"
+        Write-Host "Major Version: $($modelObject.MajorVersion)"
+        Write-Host "Minor Version: $($modelObject.MinorVersion)"
+        Write-Host "Transfer Mode: $($modelObject.TransferMode)"
+        Write-Host "PowerOnHours: $($modelObject.PowerOnHours)"
+        Write-Host "PowerOnCount: $($modelObject.PowerOnCount)"
+        Write-Host "Temperature: $($modelObject.Temperature)"
         if ($modelObject.HealthStatus -match "Good") {
-            Write-Host "Health Status: $($modelObject.HealthStatus)" -BackgroundColor Green
+            Write-Host "Health Status: $($modelObject.HealthStatus)" -ForegroundColor Green
         } else {
             Write-Host "Health Status: $($modelObject.HealthStatus)" -BackgroundColor Red
         }
-        Write-Host "Features: $($modelObject.Features)" -BackgroundColor Green
-        Write-Host "APM Level: $($modelObject.APMLevel)" -BackgroundColor Green
-        Write-Host "AAM Level: $($modelObject.AAMLevel)" -BackgroundColor Green
-        Write-Host "Drive Letter: $($modelObject.DriveLetter)" -BackgroundColor Green
+        Write-Host "Features: $($modelObject.Features)"
+        Write-Host "APM Level: $($modelObject.APMLevel)"
+        Write-Host "AAM Level: $($modelObject.AAMLevel)"
+        Write-Host "Drive Letter: $($modelObject.DriveLetter)"
+
         Write-Host
+
         Write-Host "Disk Values" -BackgroundColor Magenta
-        if ($null -ne $ReadErrorRate -and $ReadErrorRate -match '^\d+$' -and $ReadErrorRate -eq 0) {
-            Write-Host "Read Error Rate: $ReadErrorRate" -BackgroundColor Green
+        if ($null -ne $ReadErrorRate -and $ReadErrorRate -match '^\d+$' -and $ReadErrorRate -ge $MaxReadErrorRate) {
+            Write-Host "Read Error Rate: $ReadErrorRate" -BackgroundColor Red
         } else {
-            Write-Host "Read Error Rate: $ReadErrorRate" -BackgroundColor Cyan
+            Write-Host "Read Error Rate: $ReadErrorRate" -ForegroundColor Green
         }
-        Write-Host "Spin Up Time: $SpinUpTime" -BackgroundColor Green
-        Write-Host "Start Stop Count: $StartStopCount" -BackgroundColor Green
-        if ($null -ne $ReallocatedSectorsCount -and $ReallocatedSectorsCount -match '^\d+$' -and $ReallocatedSectorsCount -eq 0) {
-            Write-Host "Reallocated Sectors Count: $ReallocatedSectorsCount" -BackgroundColor Green
-        } else {
+        Write-Host "Spin Up Time: $SpinUpTime"
+        Write-Host "Start Stop Count: $StartStopCount"
+        if ($null -ne $ReallocatedSectorsCount -and $ReallocatedSectorsCount -match '^\d+$' -and $ReallocatedSectorsCount -ge $MaxReallocatedSectorsCount) {
             Write-Host "Reallocated Sectors Count: $ReallocatedSectorsCount" -BackgroundColor Red
-        }
-        if ($null -ne $SeekErrorRate -and $SeekErrorRate -match '^\d+$' -and $SeekErrorRate -eq 0) {
-            Write-Host "Seek Error Rate: $SeekErrorRate" -BackgroundColor Green
         } else {
-            Write-Host "Seek Error Rate: $SeekErrorRate" -BackgroundColor Cyan
+            Write-Host "Reallocated Sectors Count: $ReallocatedSectorsCount" -ForegroundColor Green
         }
-        Write-Host "Power On Hours: $PowerOnHoursValue" -BackgroundColor Green
-        Write-Host "Spin Retry Count: $SpinRetryCount" -BackgroundColor Green
-        Write-Host "Recalibration Retries: $RecalibrationRetries" -BackgroundColor Green
-        Write-Host "Power Cycle Count: $PowerCycleCount" -BackgroundColor Green
-        Write-Host "Power Off Retract Count: $PowerOffRetractCount" -BackgroundColor Green
-        Write-Host "Load Unload Cycle Count: $LoadUnloadCycleCount" -BackgroundColor Green
-        Write-Host "Temperature: $Temperature" -BackgroundColor Green
-        Write-Host "Reallocation Event Count: $ReallocationEventCount" -BackgroundColor Green
-        if ($null -ne $CurrentPendingSectorCount -and $CurrentPendingSectorCount -match '^\d+$' -and $CurrentPendingSectorCount -eq 0) {
-            Write-Host "Current Pending Sector Count: $CurrentPendingSectorCount" -BackgroundColor Green
-        } else {
+        Write-Host "Seek Error Rate: $SeekErrorRate"
+        Write-Host "Power On Hours: $PowerOnHoursValue"
+        Write-Host "Spin Retry Count: $SpinRetryCount"
+        Write-Host "Recalibration Retries: $RecalibrationRetries"
+        Write-Host "Power Cycle Count: $PowerCycleCount"
+        Write-Host "Power Off Retract Count: $PowerOffRetractCount"
+        Write-Host "Load Unload Cycle Count: $LoadUnloadCycleCount"
+        Write-Host "Temperature: $Temperature"
+        Write-Host "Reallocation Event Count: $ReallocationEventCount"
+        if ($null -ne $CurrentPendingSectorCount -and $CurrentPendingSectorCount -match '^\d+$' -and $CurrentPendingSectorCount -ge $MaxCurrentPendingSectorCount) {
             Write-Host "Current Pending Sector Count: $CurrentPendingSectorCount" -BackgroundColor Red
-        }
-        if ($null -ne $UncorrectableSectorCount -and $UncorrectableSectorCount -match '^\d+$' -and $UncorrectableSectorCount -eq 0) {
-            Write-Host "Uncorrectable Sector Count: $UncorrectableSectorCount" -BackgroundColor Green
         } else {
+            Write-Host "Current Pending Sector Count: $CurrentPendingSectorCount" -ForegroundColor Green
+        }
+        if ($null -ne $UncorrectableSectorCount -and $UncorrectableSectorCount -match '^\d+$' -and $UncorrectableSectorCount -ge $MaxUncorrectableSectorCount) {
             Write-Host "Uncorrectable Sector Count: $UncorrectableSectorCount" -BackgroundColor Red
-        }
-        Write-Host "UltraDMACRC Error Count: $UltraDMACRCErrorCount" -BackgroundColor Green
-        if ($null -ne $WriteErrorRate -and $WriteErrorRate -match '^\d+$' -and $WriteErrorRate -eq 0) {
-            Write-Host "Write Error Rate: $WriteErrorRate" -BackgroundColor Green
         } else {
-            Write-Host "Write Error Rate: $WriteErrorRate" -BackgroundColor Cyan
+            Write-Host "Uncorrectable Sector Count: $UncorrectableSectorCount" -ForegroundColor Green
+        }
+        Write-Host "UltraDMACRC Error Count: $UltraDMACRCErrorCount"
+        if ($null -ne $WriteErrorRate -and $WriteErrorRate -match '^\d+$' -and $WriteErrorRate -ge $MaxWriteErrorRate) {
+            Write-Host "Write Error Rate: $WriteErrorRate" -BackgroundColor Red
+        } else {
+            Write-Host "Write Error Rate: $WriteErrorRate" -ForegroundColor Green
         }
         Write-Host "-------------------------------"
         Write-Host
 
         # Parse Max Min and Current Temp
-        #$hexString = ($diskinfo | Where-Object { $_.ID -eq "C2"}).RawValue
+        $hexString = ($diskinfo | Where-Object { $_.ID -eq "C2"}).RawValue
 
         # Split the string into three parts
-        #$part1 = "0x" + $hexString.Substring(0, 4)
-        #$part2 = "0x" + $hexString.Substring(4, 4)
-        #$part3 = "0x" + $hexString.Substring(8, 4)
+        $maxTemp = "0x" + $hexString.Substring(0, 4)
+        $minTemp = "0x" + $hexString.Substring(4, 4)
+        $currentTemp = "0x" + $hexString.Substring(8, 4)
+
+        if ($null -ne [uint32]$Temperature -and [uint32]$Temperature -match '^\d+$') {
+            if ($null -ne [uint32]$maxTemp -and [uint32]$maxTemp -match '^\d+$') {
+                if (-not([uint32]$maxTemp -eq 0)) {
+                    if ([uint32]$Temperature -gt [uint32]$maxTemp) {
+                        Write-Host "$($modelObject.Model) is currently running above the maximum temperature rating. Max Temperature: $([uint32]$maxTemp) | Current Temperature: $([uint32]$Temperature)" -BackgroundColor Red
+                        Write-Host
+                    }
+                }
+            }
+        }
 
         # Output the parts
-        #Write-Host "Maximum Temp: $part1"
-        #Write-Host "Minimum Temp: $part2"
-        #Write-Host "Current Temp: $part3"
+        #Write-Host "Maximum Temp: $maxTemp "
+        #Write-Host "Minimum Temp: $minTemp"
+        #Write-Host "Current Temp: $currentTemp"
+
+        # $null -ne ensures that var is not empty.
+        # -match '^\d+$' uses a regular expression to verify that var contains only digits, making it a valid integer.
+        # Reallocated sectors are a warning sign that your disk may be dying if the number is very high or if it increases rapidly. 
+        # If you have 1, 2 or even 20 reallocated sectors on your drive it may not be a cause for panic, as many hard drives can last for years with only a few bad sectors being reallocated. 
+        # But you have to watch this number very closely, because if it increases over time it’s likely that the disk is dying
+        if ($null -ne $ReallocatedSectorsCount -and $ReallocatedSectorsCount -match '^\d+$' -and $ReallocatedSectorsCount -ge $MaxReallocatedSectorsCount) {
+            $RegistryBase = "HKLM:\SOFTWARE\SMARTCheck\Monitoring\ReallocatedSectorsCount"
+
+            # Set disk registry path
+            $RegistryPath = Join-Path -Path $RegistryBase -ChildPath "$($modelObject.Model)"
+                
+            # Create disk registry key if not present
+            if (-not (Test-Path -Path $RegistryPath)) {
+                New-Item -Path $RegistryPath -Force | Out-Null
+            }
+                
+            # Set registry values and warning message
+            New-ItemProperty -Path $RegistryPath -Name $((Get-Date).ToString('yyyy-MM-dd')) -Value $ReallocatedSectorsCount -PropertyType "String" -Force | Out-Null
+
+            $latestEntries = Get-LatestAndSecondLatestRegistryValues -RegistryPath $RegistryPath
+
+            if ($latestEntries) {
+                Write-Host "Latest Reallocated Sectors Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                Write-Host "Date: $($latestEntries.LatestDate)" -ForegroundColor Cyan
+                Write-Host "Value: $($latestEntries.LatestValue)" -ForegroundColor Cyan
+                
+                if ($latestEntries.SecondLatestDate) {
+                    Write-Host "Second latest Reallocated Sectors Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                    Write-Host "Date: $($latestEntries.SecondLatestDate)" -ForegroundColor Cyan
+                    Write-Host "Value: $($latestEntries.SecondLatestValue)" -ForegroundColor Cyan
+                    if ($latestEntries.LatestValue -gt $latestEntries.SecondLatestValue) {
+                        $FinalReallocatedSectorsCount = [int]$latestEntries.LatestValue - [int]$latestEntries.SecondLatestValue
+                        $OutputMsg = "Disk $($modelObject.Model) - The number of reallocated sectors has increased by a factor of $FinalReallocatedSectorsCount since the last check. This is generally a bad sign and you should replace your drive immediately."
+                        Write-Host $OutputMsg -BackgroundColor Red
+                    }
+                } else {
+                    Write-Host "No second latest entry found for disk $($modelObject.Model)" -ForegroundColor Cyan
+                }
+            } else {
+                Write-Host "No entries found for disk $($modelObject.Model)" -ForegroundColor Cyan
+            }
+        }
+
+        # Pending sectors are a warning sign that your drive may experience some problems or failure. The main way to determine whether or not your drive is likely to fail is how quickly this count increases. 
+        # If your count is fairly low (say <20) and after continuing to use the drive, rebooting the system, etc the count stays the exact same, your drive may be okay. However, 
+        # if your pending sector count increases you should immediately replace the drive to prevent data loss.
+        if ($null -ne $CurrentPendingSectorCount -and $CurrentPendingSectorCount -match '^\d+$' -and $CurrentPendingSectorCount -ge $MaxCurrentPendingSectorCount) {
+            $RegistryBase = "HKLM:\SOFTWARE\SMARTCheck\Monitoring\CurrentPendingSectorCount"
+
+            # Set disk registry path
+            $RegistryPath = Join-Path -Path $RegistryBase -ChildPath "$($modelObject.Model)"
+                
+            # Create disk registry key if not present
+            if (-not (Test-Path -Path $RegistryPath)) {
+                New-Item -Path $RegistryPath -Force | Out-Null
+            }
+                
+            # Set registry values and warning message
+            New-ItemProperty -Path $RegistryPath -Name $((Get-Date).ToString('yyyy-MM-dd')) -Value $CurrentPendingSectorCount -PropertyType "String" -Force | Out-Null
+
+            $latestEntries = Get-LatestAndSecondLatestRegistryValues -RegistryPath $RegistryPath
+
+            if ($latestEntries) {
+                Write-Host "Latest Current Pending Sector Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                Write-Host "Date: $($latestEntries.LatestDate)" -ForegroundColor Cyan
+                Write-Host "Value: $($latestEntries.LatestValue)" -ForegroundColor Cyan
+                
+                if ($latestEntries.SecondLatestDate) {
+                    Write-Host "Second latest Current Pending Sector Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                    Write-Host "Date: $($latestEntries.SecondLatestDate)" -ForegroundColor Cyan
+                    Write-Host "Value: $($latestEntries.SecondLatestValue)" -ForegroundColor Cyan
+                    if ($latestEntries.LatestValue -gt $latestEntries.SecondLatestValue) {
+                        $FinalCurrentPendingSectorCount = [int]$latestEntries.LatestValue - [int]$latestEntries.SecondLatestValue
+                        $OutputMsg = "Disk $($modelObject.Model) - The number of current pending sectors has increased by a factor of $FinalCurrentPendingSectorCount since the last check. This is generally a bad sign and you should replace your drive immediately."
+                        Write-Host $OutputMsg -BackgroundColor Red
+                    }
+                } else {
+                    Write-Host "No second latest entry found for disk $($modelObject.Model)" -ForegroundColor Cyan
+                }
+            } else {
+                Write-Host "No entries found for disk $($modelObject.Model)" -ForegroundColor Cyan
+            }
+        }
+
+        # Like Reallocated and Pending sectors, if this count does not drastically increase over time it may be okay to keep using the drive. 
+        # However, it is advisable to replace the hard drive if your data is important to you and to only continue using the drive for non-critical data storage. 
+        # You should backup any data on the drive immediately if you do not already have a recent backup.
+        if ($null -ne $UncorrectableSectorCount -and $UncorrectableSectorCount -match '^\d+$' -and $UncorrectableSectorCount -ge $MaxUncorrectableSectorCount) {
+            $RegistryBase = "HKLM:\SOFTWARE\SMARTCheck\Monitoring\UncorrectableSectorCount"
+
+            # Set disk registry path
+            $RegistryPath = Join-Path -Path $RegistryBase -ChildPath "$($modelObject.Model)"
+                
+            # Create disk registry key if not present
+            if (-not (Test-Path -Path $RegistryPath)) {
+                New-Item -Path $RegistryPath -Force | Out-Null
+            }
+                
+            # Set registry values and warning message
+            New-ItemProperty -Path $RegistryPath -Name $((Get-Date).ToString('yyyy-MM-dd')) -Value $UncorrectableSectorCount -PropertyType "String" -Force | Out-Null
+
+            $latestEntries = Get-LatestAndSecondLatestRegistryValues -RegistryPath $RegistryPath
+
+            if ($latestEntries) {
+                Write-Host "Latest Uncorrectable Sector Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                Write-Host "Date: $($latestEntries.LatestDate)" -ForegroundColor Cyan
+                Write-Host "Value: $($latestEntries.LatestValue)" -ForegroundColor Cyan
+                
+                if ($latestEntries.SecondLatestDate) {
+                    Write-Host "Second latest Uncorrectable Sector Count registry entry for disk $($modelObject.Model)" -ForegroundColor Cyan
+                    Write-Host "Date: $($latestEntries.SecondLatestDate)" -ForegroundColor Cyan
+                    Write-Host "Value: $($latestEntries.SecondLatestValue)" -ForegroundColor Cyan
+                    if ($latestEntries.LatestValue -gt $latestEntries.SecondLatestValue) {
+                        $FinalUncorrectableSectorCount = [int]$latestEntries.LatestValue - [int]$latestEntries.SecondLatestValue
+                        $OutputMsg = "Disk $($modelObject.Model) - The number of uncorrectable sector count has increased by a factor of $FinalUncorrectableSectorCount since the last check. This is generally a bad sign and you should replace your drive immediately."
+                        Write-Host $OutputMsg -BackgroundColor Red
+                    }
+                } else {
+                    Write-Host "No second latest entry found for disk $($modelObject.Model)" -ForegroundColor Cyan
+                }
+            } else {
+                Write-Host "No entries found for disk $($modelObject.Model)" -ForegroundColor Cyan
+            }
+        }
     } else {
-        Write-Host "FOUND NVME LOG" -ForegroundColor Yellow
+        Write-Host "FOUND NVME LOG" -ForegroundColor Cyan
         $diskinfo = $DiskInfoRaw -split "`n" | select -skip 1 | Out-String | ConvertFrom-Csv -Delimiter " " -Header "ID","RawValue","Attribute","Name"
 
         [int64]$CriticalWarnings = "0x" + ($diskinfo | Where-Object { $_.ID -eq "01"}).RawValue
@@ -313,58 +514,52 @@ for ($i = 0; $i -lt $allRawValuesCapturedLines.Count; $i++) {
         [int64]$InformationLogEntries = "0x" + ($diskinfo | Where-Object { $_.ID -eq "0F"}).RawValue
 
         Write-Host "Disk Information" -BackgroundColor Magenta
-        Write-Host "Model: $($modelObject.Model)" -BackgroundColor Green
-        Write-Host "Firmware: $($modelObject.Firmware)" -BackgroundColor Green
-        Write-Host "Serial Number: $($modelObject.SerialNumber)" -BackgroundColor Green
-        Write-Host "Disk Size: $($modelObject.DiskSize)" -BackgroundColor Green
-        Write-Host "Interface: $($modelObject.Interface)" -BackgroundColor Green
-        Write-Host "Standard: $($modelObject.Standard)" -BackgroundColor Green
-        Write-Host "Transfer Mode: $($modelObject.TransferMode)" -BackgroundColor Green
-        Write-Host "PowerOnHours: $($modelObject.PowerOnHours)" -BackgroundColor Green
-        Write-Host "PowerOnCount: $($modelObject.PowerOnCount)" -BackgroundColor Green
-        Write-Host "Host Reads: $($modelObject.HostReads)" -BackgroundColor Green
-        Write-Host "Host Writes: $($modelObject.HostWrites)" -BackgroundColor Green
-        Write-Host "Temperature: $($modelObject.Temperature)" -BackgroundColor Green
+        Write-Host "Model: $($modelObject.Model)"
+        Write-Host "Firmware: $($modelObject.Firmware)"
+        Write-Host "Serial Number: $($modelObject.SerialNumber)"
+        Write-Host "Disk Size: $($modelObject.DiskSize)"
+        Write-Host "Interface: $($modelObject.Interface)"
+        Write-Host "Standard: $($modelObject.Standard)"
+        Write-Host "Transfer Mode: $($modelObject.TransferMode)"
+        Write-Host "PowerOnHours: $($modelObject.PowerOnHours)"
+        Write-Host "PowerOnCount: $($modelObject.PowerOnCount)"
+        Write-Host "Host Reads: $($modelObject.HostReads)"
+        Write-Host "Host Writes: $($modelObject.HostWrites)"
+        Write-Host "Temperature: $($modelObject.Temperature)"
         if ($modelObject.HealthStatus -match "Good") {
-            Write-Host "Health Status: $($modelObject.HealthStatus)" -BackgroundColor Green
+            Write-Host "Health Status: $($modelObject.HealthStatus)" -ForegroundColor Green
         } else {
             Write-Host "Health Status: $($modelObject.HealthStatus)" -BackgroundColor Red
         }
-        Write-Host "Features: $($modelObject.Features)" -BackgroundColor Green
-        Write-Host "Drive Letter: $($modelObject.DriveLetter)" -BackgroundColor Green
+        Write-Host "Features: $($modelObject.Features)"
+        Write-Host "Drive Letter: $($modelObject.DriveLetter)"
+
         Write-Host
+
         Write-Host "Disk Values" -BackgroundColor Magenta
         if ($null -ne $CriticalWarnings -and $CriticalWarnings -match '^\d+$' -and $CriticalWarnings -eq 0) {
-            Write-Host "Critical Warnings: $CriticalWarnings" -BackgroundColor Green
+            Write-Host "Critical Warnings: $CriticalWarnings" -ForegroundColor Green
         } else {
             Write-Host "Critical Warnings: $CriticalWarnings" -BackgroundColor Red
         }
-        Write-Host "Composite Temp: $CompositeTemp" -BackgroundColor Green
-        Write-Host "Available Spare: $AvailableSpare" -BackgroundColor Green
-        Write-Host "Available Spare Threshold: $AvailableSpareThreshold" -BackgroundColor Green
-        Write-Host "Percentage Used: $PercentageUsed" -BackgroundColor Green
-        Write-Host "DataUnits Read: $DataUnitsRead" -BackgroundColor Green
-        Write-Host "DataUnits Written: $DataUnitsWritten" -BackgroundColor Green
-        Write-Host "Host Read Commands: $HostReadCommands" -BackgroundColor Green
-        Write-Host "Host Write Commands: $HostWriteCommands" -BackgroundColor Green
-        Write-Host "ControllerBusyTime: $ControllerBusyTime" -BackgroundColor Green
-        Write-Host "PowerCycles: $PowerCycles" -BackgroundColor Green
-        Write-Host "PowerOnHours: $PowerOnHours" -BackgroundColor Green
+        Write-Host "Composite Temp: $CompositeTemp"
+        Write-Host "Available Spare: $AvailableSpare"
+        Write-Host "Available Spare Threshold: $AvailableSpareThreshold"
+        Write-Host "Percentage Used: $PercentageUsed"
+        Write-Host "DataUnits Read: $DataUnitsRead"
+        Write-Host "DataUnits Written: $DataUnitsWritten"
+        Write-Host "Host Read Commands: $HostReadCommands"
+        Write-Host "Host Write Commands: $HostWriteCommands"
+        Write-Host "ControllerBusyTime: $ControllerBusyTime"
+        Write-Host "PowerCycles: $PowerCycles"
+        Write-Host "PowerOnHours: $PowerOnHours"
         if ($null -ne $UnsafeShutdowns -and $UnsafeShutdowns -match '^\d+$' -and $UnsafeShutdowns -eq 0) {
-            Write-Host "UnsafeShutdowns: $UnsafeShutdowns" -BackgroundColor Green
+            Write-Host "UnsafeShutdowns: $UnsafeShutdowns" -ForegroundColor Green
         } else {
-            Write-Host "UnsafeShutdowns: $UnsafeShutdowns" -BackgroundColor Cyan
+            Write-Host "UnsafeShutdowns: $UnsafeShutdowns" -ForegroundColor Yellow
         }
-        if ($null -ne $IntegrityErrors -and $IntegrityErrors -match '^\d+$' -and $IntegrityErrors -eq 0) {
-            Write-Host "IntegrityErrors: $IntegrityErrors" -BackgroundColor Green
-        } else {
-            Write-Host "IntegrityErrors: $IntegrityErrors" -BackgroundColor Red
-        }
-        if ($null -ne $InformationLogEntries -and $InformationLogEntries -match '^\d+$' -and $InformationLogEntries -eq 0) {
-            Write-Host "InformationLogEntries: $InformationLogEntries" -BackgroundColor Green
-        } else {
-            Write-Host "InformationLogEntries: $InformationLogEntries" -BackgroundColor Cyan
-        }
+        Write-Host "IntegrityErrors: $IntegrityErrors"
+        Write-Host "InformationLogEntries: $InformationLogEntries"
         Write-Host "-------------------------------"
         Write-Host
     }
