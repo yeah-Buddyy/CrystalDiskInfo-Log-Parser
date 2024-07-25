@@ -21,8 +21,11 @@ $filePathDiskInfoTxt = "$PSScriptRoot\CrystalDiskInfo\DiskInfo.txt"
 # Define the file path
 $filePathDiskInfoExe = "$PSScriptRoot\CrystalDiskInfo\DiskInfo64.exe"
 
+# Current Date
+$currentDate = "$((Get-Date).ToString('yyyy-MM-dd'))"
+
 # Define the output file path
-$outputFile = "$PSScriptRoot\DiskInfoOutput.txt"
+$outputFile = "$PSScriptRoot\$currentDate`_DiskInfoOutput.txt"
 
 $DownloadURL = "https://sourceforge.net/projects/crystaldiskinfo/files/9.3.2/CrystalDiskInfo9_3_2.zip/download"
 $DownloadLocation = Join-Path -Path $PSScriptRoot -ChildPath "CrystalDiskInfo"
